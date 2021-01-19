@@ -247,7 +247,9 @@ subroutine cnst_add (name, mwc, cpc, qminc, &
    ! both cnst_is_convtran1 and cnst_is_convtran2 to FALSE.  But it is an error to
    ! have both set TRUE.
    if (cnst_is_convtran1(ind) .and. cnst_is_convtran2(ind)) then
-      call endrun(sub//': FATAL: cannot set both cnst_is_convtran1 and cnst_is_convtran2 to TRUE')
+      print*,'FATAL: cannot set both cnst_is_convtran1 and cnst_is_convtran2 to TRUE' 
+      stop
+      !call endrun(sub//': FATAL: cannot set both cnst_is_convtran1 and cnst_is_convtran2 to TRUE')
    end if
 
    ! Set type for species class
