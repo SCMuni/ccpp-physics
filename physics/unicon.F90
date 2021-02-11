@@ -21068,7 +21068,7 @@ end subroutine compute_unicon
     
   ! if( dm .eq. 0._kind_phys ) then
     if( dm .lt. 1.e-5_kind_phys ) then ! To avoid dividing by zero ( dpd = 0 ) by round-off error.
-        ad = a0(ku) + ssa0(ku) * ( ptop - 0.5_kind_phys * ( ps0(ku-1) - ps0(ku ) ) )
+        ad = a0(ku) + ssa0(ku) * ( ptop - 0.5_kind_phys * ( ps0(ku-1) + ps0(ku ) ) )
         return
     endif   
 
