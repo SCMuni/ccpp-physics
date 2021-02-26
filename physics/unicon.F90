@@ -2612,7 +2612,9 @@ subroutine compute_unicon( mix            , mkx           , iend          , ncns
    real(kind_phys)    thl_meu, qt_meu, ql_meu, qi_meu, qv_meu, u_meu, v_meu
    real(kind_phys)    tr_med(ncnst), tr_meu(ncnst) 
    real(kind_phys)    fac, sum_mix
-   real(kind_phys)    f_nu, f_nd, f_wd
+   ! SUNGSU.Feb.24.2021.
+   ! Add f_mu for CFL condition.
+   real(kind_phys)    f_nu, f_nd, f_wd, f_mu
    real(kind_phys)    cmf_dt, thl_dt, qt_dt, u_dt, v_dt, w_dt
    real(kind_phys)    tr_dt(ncnst)
    real(kind_phys)    cmf_db, thl_db, qt_db, u_db, v_db, w_db, thvl_db
@@ -9906,6 +9908,45 @@ subroutine compute_unicon( mix            , mkx           , iend          , ncns
                   enddo
                endif
 
+               ! ------------------------------------------------------------------------ !
+               ! SUNGSU. 2021.02.18.                                                      !
+               ! Apply the constraint of updraft mass flux for each updraft segment       !
+               ! and compute the mass of the 3rd type of detrained airs.                  !
+               ! Note that 'ybot(m)=1' always.                                            !
+               ! This is designed to remove the instability.                              !
+               ! We reduce both w_aut(m) and a_aut(m).                                    !
+               ! ------------------------------------------------------------------------ !
+
+               cmf_tent = 0._kind_phys
+               if( nseg_nondet .gt. 0.5_kind_phys ) then
+                  do m = 1, N_up_km
+                     if( ytop(m) .gt. 0.5_kind_phys ) then
+                        cmf_tent  = cmf_tent  + cmf_aut(m) 
+                     endif
+                  enddo
+               endif
+               f_mu = max( 0._kind_phys, 1._kind_phys - ( dp_m / g / dt ) / max( nonzero, cmf_tent ) ) 
+               if( cmf_tent .gt. ( dp_m / g / dt ) ) then
+                  do m = 1, N_up_km
+                     if( ytop(m) .gt. 0.5_kind_phys ) then
+                       ! if( l_constrain_down ) then ! Treat constrained downdraft as downdraft source as in original unicon.
+                             f_srcds(k,m,3)  = f_srcds(k,m,3) + f_mu * cmf_aut(m) / cmf_u(km)
+                       ! else                        ! Detrain constrained downdraft into the current layer directly at the top interface
+                       !     f_srcrs(m)  = f_srcrs(m) + f_nu * cmf_aut(m) / cmf_u_km                     
+                       !     f_srcrs2(m) = f_srcrs(m)                                                                       
+                       ! endif
+                         cmf_aut(m)      = cmf_aut(m) *     ( 1._kind_phys - f_mu )
+                         w_aut(m)        =   w_aut(m) * sqrt( 1._kind_phys - f_mu )
+                         a_aut(m)        =   a_aut(m) * sqrt( 1._kind_phys - f_mu )
+                         rad_aut(m)      = sqrt( a_aut(m) / num_aut(m) /  3.141592_kind_phys )   ! Physical radius of updraft plume [ m ]
+                     endif
+                  enddo
+               endif
+
+               ! ------------------------------------------------------------------------ !
+               ! SUNGSU. 2021.02.18.                                                      !
+               ! ------------------------------------------------------------------------ !
+               
                ! ---------------------------------------------------------------------- !
                ! Mass-flux weighted mean or net updraft properties at the top interface !
                ! These are computed only using non-detached updrafts.                   !
@@ -10089,7 +10130,11 @@ subroutine compute_unicon( mix            , mkx           , iend          , ncns
                   !              From the consideration of idealized case, I clearly checked that below new formula is
                   !              absolutely correct and also is fully consistent with CAM5 shallow convection scheme.
                   fac            = 0.5_kind_phys * ( cmf_au(m) + cmf_aut(m) ) * ( dpa(m) / dp_m )
-                  if( ytop(m) .gt. 0.5_kind_phys ) fac = 0.5_kind_phys * ( cmf_au(m) + cmf_aut(m) / ( 1._kind_phys - f_nu ) / ( 1._kind_phys - f_wu(m) ) )
+                  ! SUNGSU.Feb.24.2021.
+                  ! Add 'f_mu' factor.
+                ! if( ytop(m) .gt. 0.5_kind_phys ) fac = 0.5_kind_phys * ( cmf_au(m) + cmf_aut(m) / ( 1._kind_phys - f_nu ) / ( 1._kind_phys - f_wu(m) ) )
+                  if( ytop(m) .gt. 0.5_kind_phys ) fac = 0.5_kind_phys * ( cmf_au(m) + cmf_aut(m) / ( 1._kind_phys - f_nu ) / ( 1._kind_phys - f_mu ) / ( 1._kind_phys - f_wu(m) ) )
+                  ! SUNGSU.Feb.24.2021.
                   cmf_u_dia(k)   = cmf_u_dia(k)   +                    fac
                   evp_thll_u(k)  = evp_thll_u(k)  +   evp_thll_au(m) * fac
                   evp_qtl_u(k)   = evp_qtl_u(k)   +    evp_qtl_au(m) * fac
@@ -16170,8 +16215,10 @@ subroutine compute_unicon( mix            , mkx           , iend          , ncns
             kp = k + 1
             um = abs( g * cmf_u(k) * dt )
             dm = abs( g * cmf_d(k) * dt )
-            call envcon_flux( k, mkx, um, dm, ql0(1:mkx), ssql0(1:mkx), ps0(0:mkx), ql_env_u, ql_env_d )
-            call envcon_flux( k, mkx, um, dm, qi0(1:mkx), ssqi0(1:mkx), ps0(0:mkx), qi_env_u, qi_env_d )
+            ! SUNGSU.Feb.21.2021.
+            ! Change 'mkx' to 'ktop'.
+            call envcon_flux( k, ktop, um, dm, ql0(1:ktop), ssql0(1:ktop), ps0(0:ktop), ql_env_u, ql_env_d, qmin(ixcldliq) )
+            call envcon_flux( k, ktop, um, dm, qi0(1:ktop), ssqi0(1:ktop), ps0(0:ktop), qi_env_u, qi_env_d, qmin(ixcldice) )
             ql_env_ua(k)  = ql_env_u 
             qi_env_ua(k)  = qi_env_u
             ql_env_da(kp) = ql_env_d 
@@ -16189,7 +16236,9 @@ subroutine compute_unicon( mix            , mkx           , iend          , ncns
             do mt = 1, ncnst
                ! Nov.30.2012. Strictly speaking, we should not use 'ps0' but use the interface pressure corresponding
                !              to individual tracers derived from 'dptr0(k,mt)'. This should be done in future. 
-               call envcon_flux( k, mkx, um, dm, tr0(1:mkx,mt), sstr0(1:mkx,mt), ps0(0:mkx), tr_env_u, tr_env_d )
+               ! SUNGSU.Feb.21.2021.
+               ! Change 'mkx' to 'ktop'.
+               call envcon_flux( k, ktop, um, dm, tr0(1:ktop,mt), sstr0(1:ktop,mt), ps0(0:ktop), tr_env_u, tr_env_d, qmin(mt) )
                if( iflux_env .eq. 0 ) then
                   tr_env_u = tr0bot(kp,mt)
                   tr_env_d = tr0top(k,mt)
@@ -16507,10 +16556,12 @@ subroutine compute_unicon( mix            , mkx           , iend          , ncns
          do k = 1, ktop - 1    ! This is a layer index        
             um = abs( g * cmf_u(k) * dt )
             dm = 0._kind_phys
-            call envcon_flux( k, mkx, um, dm, thl0(1:mkx), ssthl0(1:mkx), ps0(0:mkx), thl_env_u, thl_env_d )
-            call envcon_flux( k, mkx, um, dm, qt0(1:mkx), ssqt0(1:mkx), ps0(0:mkx), qt_env_u, qt_env_d )
-            call envcon_flux( k, mkx, um, dm, u0(1:mkx), ssu0(1:mkx), ps0(0:mkx), u_env_u, u_env_d )
-            call envcon_flux( k, mkx, um, dm, v0(1:mkx), ssv0(1:mkx), ps0(0:mkx), v_env_u, v_env_d )
+            ! SUNGSU.Feb.21.2021.
+            ! Change 'mkx' to 'ktop'.
+            call envcon_flux( k, ktop, um, dm, thl0(1:ktop), ssthl0(1:ktop), ps0(0:ktop), thl_env_u, thl_env_d, 0._kind_phys )
+            call envcon_flux( k, ktop, um, dm, qt0(1:ktop), ssqt0(1:ktop), ps0(0:ktop), qt_env_u, qt_env_d, qmin(1) + qmin(ixcldliq) + qmin(ixcldice) )
+            call envcon_flux( k, ktop, um, dm, u0(1:ktop), ssu0(1:ktop), ps0(0:ktop), u_env_u, u_env_d )
+            call envcon_flux( k, ktop, um, dm, v0(1:ktop), ssv0(1:ktop), ps0(0:ktop), v_env_u, v_env_d )
             ! CHECK
             ! write(6,*)
             ! write(6,*) 'UNICON: Environmental profile value for updraft flux computation'
@@ -16587,10 +16638,12 @@ subroutine compute_unicon( mix            , mkx           , iend          , ncns
          do k = 1, ktop - 1    ! This is a top interface index or layer index
             um = abs( g * cmf_u(k) * dt )
             dm = abs( g * cmf_d(k) * dt )
-            call envcon_flux( k, mkx, um, dm, thl0(1:mkx), ssthl0(1:mkx), ps0(0:mkx), thl_env_u, thl_env_d )
-            call envcon_flux( k, mkx, um, dm, qt0(1:mkx), ssqt0(1:mkx), ps0(0:mkx), qt_env_u, qt_env_d )
-            call envcon_flux( k, mkx, um, dm, u0(1:mkx), ssu0(1:mkx), ps0(0:mkx), u_env_u, u_env_d )
-            call envcon_flux( k, mkx, um, dm, v0(1:mkx), ssv0(1:mkx), ps0(0:mkx), v_env_u, v_env_d )
+            ! SUNGSU.Feb.21.2021.
+            ! Change 'mkx' to 'ktop'.
+            call envcon_flux( k, ktop, um, dm, thl0(1:ktop), ssthl0(1:ktop), ps0(0:ktop), thl_env_u, thl_env_d, 0._kind_phys )
+            call envcon_flux( k, ktop, um, dm, qt0(1:ktop), ssqt0(1:ktop), ps0(0:ktop), qt_env_u, qt_env_d, qmin(1) + qmin(ixcldliq) + qmin(ixcldice) )
+            call envcon_flux( k, ktop, um, dm, u0(1:ktop), ssu0(1:ktop), ps0(0:ktop), u_env_u, u_env_d )
+            call envcon_flux( k, ktop, um, dm, v0(1:ktop), ssv0(1:ktop), ps0(0:ktop), v_env_u, v_env_d )
 
             ! CHECK
             ! write(6,*)
@@ -20984,7 +21037,186 @@ end subroutine compute_unicon
   end function area_overlap
 
 
-  subroutine envcon_flux(ki,mkx,umi,dmi,a0,ssa0,ps0,au,ad)
+  ! SES
+  !subroutine envcon_flux(ki,mkx,umi,dmi,a0,ssa0,ps0,au,ad)
+  subroutine envcon_flux(ki,mkx,umi,dmi,a0,ssa0,ps0,au,ad,qmin)
+  ! SES
+  ! --------------------------------------------------------------------------- !
+  ! Compute mean-environmental values of conservative scalar for computation of !
+  ! convective fluxes by considering the displacement of flux interface induced !
+  ! by convective updraft and downdraft mass fluxes and associated compensating !
+  ! downwelling and upwelling.                                                  !
+  ! ki  : interface index that is considered                                    !
+  ! umi : updraft   mass flux in unit of [Pa] during dt ( umi >= 0 )            !
+  ! dmi : downdraft mass flux in unit of [Pa] during dt ( dmi >= 0 )            !
+  ! a   : environmental conservative scalar that is considered                  !
+  ! Done.                                                                       !
+  ! --------------------------------------------------------------------------- ! 
+    implicit none
+    integer,  intent(in)           :: ki, mkx 
+    real(kind_phys), intent(in)           :: umi, dmi
+    real(kind_phys), intent(in)           :: a0(mkx), ssa0(mkx)
+    real(kind_phys), intent(in)           :: ps0(0:mkx)
+    ! SES
+    real(kind_phys), intent(in), optional :: qmin
+    ! SES
+    real(kind_phys), intent(out)          :: au, ad
+    integer   k, ku, kd 
+    real(kind_phys)  um, dm
+    real(kind_phys)  dp, dpu, dpd, pbot, ptop, dptop, a_dptop, dpbot, a_dpbot
+
+  ! Impose a limiting on the updraft (um) and downdraft mass flux (dm) such that
+  ! it cannot be larger than the available mass above the interface (um) and 
+  ! below the displaced interface (dm) by updraft mass flux. Note that ps0(0) is
+  ! surface interface while ps0(mkx) is top-most interface. Note umi, dmi > 0.
+
+    um = max( 0._kind_phys, min( umi, ps0(ki) - ps0(mkx) ) )
+    dm = max( 0._kind_phys, min( dmi, ps0(0)  - ps0(ki) + um ) ) 
+
+  ! Treatment of updraft
+ 
+  ! if( um .eq. 0._r8 ) then
+    if( um .lt. 1.e-5_kind_phys ) then ! To avoid dividing by zero ( dpu = 0 ) by round-off error.
+        if( ki .eq. mkx ) then
+            au = a0(ki)
+        else
+            au = a0(ki+1) + 0.5_kind_phys * ssa0(ki+1) * ( ps0(ki) - ps0(ki+1) ) 
+        endif
+
+        ! /*[ JIHOONS 2020.08.31 ]
+        ku = ki+1
+        ptop = ps0(ki)
+        dptop = ps0(ku-1) - ptop
+        a_dptop = a0(ku) + 0.5_kind_phys * ssa0(ku) * ( ptop - ps0(ku) )
+        ! [ JIHOONS 2020.08.31 ]*/
+
+        goto 50
+    endif
+
+    ku = ki + 1
+    do k = ki, mkx
+       if( ps0(k) .lt. ( ps0(ki) - um ) ) then  
+           ku = k 
+           goto 10
+       endif
+    enddo   
+ 10 continue
+
+    au = 0._kind_phys
+    dpu = 0._kind_phys
+    if( ( ku - 1 ) .ge. ( ki + 1 ) ) then
+          do k = ki + 1, ku - 1 
+             dp = ps0(k-1) - ps0(k)
+             au = au + a0(k) * dp
+             dpu = dpu + dp
+          enddo
+    endif
+
+    ptop = ps0(ki) - um
+    dptop = ps0(ku-1) - ptop
+    a_dptop = a0(ku) + 0.5_kind_phys * ssa0(ku) * ( ptop - ps0(ku) )
+    au = au + a_dptop * dptop
+    dpu = dpu + dptop
+    ! I checked that dpu = 0 happans when umi is very small, 1.e-15.
+    if( dpu .eq. 0._kind_phys ) then
+        write(6,*) 'ki, ku, um, umi, dmi = ', ki, ku, um, umi, dmi
+        write(6,*) 'ptop, dptop, a_dptop, au, dpu = ', ptop, dptop, a_dptop, au, dpu
+        do k = 1, mkx 
+           write(6,*) 'ps0(k), a0(k) =', ps0(k), a0(k)
+        enddo
+        call endrun('UNICON : Zero dpu within envcon_flux')  
+    endif
+    au = au / dpu
+
+ 50 continue
+  ! SUNGSU.2021.01.28
+  ! This should be added here since there are multiple 'return'commands
+  ! in the below blocks for 'dm'.  
+    if( present(qmin) ) au = max( au, qmin )
+  ! SUNGSU.2021.01.28  
+    
+  ! Treatment of downdraft
+
+  ! SUNGSU.2021.01.28
+  ! It seems that we don't need to use 'if( dm .lt. 1.e-5_r8 )' since 'dpd' is not used nowhere.
+  ! Thus, we can restore the original 'if( dm .eq. 0._r8 )'.
+  ! Actually, I may need to use 'if( dm .lt. 1.e-5_r8 )' :  if not, 'dpd' can be zero in the
+  ! below block further down since 'dm' can be very very small.  
+  ! SUNGSU.2021.01.28.      
+    
+  ! if( dm .eq. 0._r8 ) then
+    if( dm .lt. 1.e-5_kind_phys ) then ! To avoid dividing by zero ( dpd = 0 ) by round-off error.
+      ! SUNGSU.2021.01.28
+      ! Compared with 'au' when um < 1.e-5, below computation seems to be wrong.
+      ! It seems to be clear that on the RHS, it should be '( ps0(ku-1) + ps0(ku) )'
+      ! instead of '( ps0(ku-1) - ps0(ku) )'.
+      ! This can induce a huge error ! 
+      ! We need to check the entire 'envcon_flux' subroutine.
+      ! Below is the bug-fixed one.  
+        ad = a0(ku) + ssa0(ku) * ( ptop - 0.5_kind_phys * ( ps0(ku-1) + ps0(ku) ) )
+      ! Below is the original wrong one. 
+      ! ad = a0(ku) + ssa0(ku) * ( ptop - 0.5_kind_phys * ( ps0(ku-1) - ps0(ku) ) )       
+      ! SUNGSU.2021.01.28
+        ! SES
+        if( present(qmin) ) ad = max( ad, qmin )
+        ! SES
+        return
+    endif   
+
+    pbot = ps0(ki) - um + dm
+    kd = ku
+    do k = ku, 1, -1
+       if( ps0(k) .ge. pbot ) then
+           kd = k + 1
+           goto 20
+       endif
+    enddo
+ 20 continue
+
+    ad = 0._kind_phys
+    dpd = 0._kind_phys
+    if( ( ku - 1 ) .ge. ( kd + 1 ) ) then
+          do k =  kd + 1, ku - 1
+             dp = ps0(k-1) - ps0(k)
+             ad = ad + a0(k) * dp
+             dpd = dpd + dp
+          enddo 
+    endif
+
+    if( pbot .le. ps0(ku-1) ) then
+        dpbot = dm
+        a_dpbot = a0(ku) + 0.5_kind_phys * ssa0(ku) * ( pbot + ptop - ps0(ku-1) - ps0(ku) )
+        ad = ad + a_dpbot * dpbot
+        dpd = dpd + dpbot
+        ad = ad / dpd   
+        ! SES
+        if( present(qmin) ) ad = max( ad, qmin )
+        ! SES
+        return
+    else
+        dpbot = pbot - ps0(kd)
+        a_dpbot = a0(kd) + 0.5_kind_phys * ssa0(kd) * ( pbot + ps0(kd) - ps0(kd-1) - ps0(kd) )
+        ad = ad + a_dpbot * dpbot + a_dptop * dptop
+        dpd = dpd + dpbot + dptop
+        ad = ad / dpd
+        ! SES
+        if( present(qmin) ) ad = max( ad, qmin )
+        ! SES
+        return
+    endif   
+
+    ! SES
+    if( present(qmin) ) then
+        au = max( au, qmin )
+        ad = max( ad, qmin )
+    endif
+    ! SES
+
+    return
+  end subroutine envcon_flux
+
+  
+  subroutine envcon_flux_old(ki,mkx,umi,dmi,a0,ssa0,ps0,au,ad)
   ! --------------------------------------------------------------------------- !
   ! Compute mean-environmental values of conservative scalar for computation of !
   ! convective fluxes by considering the displacement of flux interface induced !
@@ -21109,7 +21341,7 @@ end subroutine compute_unicon
     endif   
 
     return
-  end subroutine envcon_flux
+  end subroutine envcon_flux_old
 
 
   subroutine prod_prep_up( z_b, z_t, p_b, p_t, exn_t, exn_m, w_b, w_t,                   & 
@@ -23327,8 +23559,164 @@ end subroutine compute_unicon
   end function zbrent
 
 
+  ! SUNGSU.Feb.24.2021.
 
+  
   subroutine positive_moisture( cp, xlv, xls, pcols, ncol, mkx, dt, qvmin, qlmin, qimin, dp, qv, ql, qi, t, s, qvten, &
+                                qlten, qiten, sten )
+  ! ------------------------------------------------------------------------------- !
+  ! Author : Sungsu Park. AMP/CGD/NCAR.                                             !
+  ! If any 'ql < qlmin, qi < qimin, qv < qvmin' are developed in any layer,         !
+  ! force them to be larger than minimum value by (1) condensating water vapor      !
+  ! into liquid or ice, and (2) by transporting water vapor from the very lower     !
+  ! layer. '2._r8' is multiplied to the minimum values for safety.                  !
+  ! Update final state variables and tendencies associated with this correction.    !
+  ! If any condensation happens, update (s,t) too.                                  !
+  ! Note that (qv,ql,qi,t,s) are final state variables after applying corresponding !
+  ! input tendencies.                                                               !
+  ! Be careful the order of k : '1': near-surface layer, 'mkx' : top layer          ! 
+  ! May.03.2011. Additional refinement is added in the lowest model layer for       !
+  !              complete treatment.                                                !
+  ! ------------------------------------------------------------------------------- !
+    implicit none
+    integer,  intent(in)     :: pcols, ncol, mkx
+    real(r8), intent(in)     :: cp, xlv, xls
+    real(r8), intent(in)     :: dt, qvmin, qlmin, qimin
+    real(r8), intent(in)     :: dp(pcols,mkx)
+    real(r8), intent(inout)  :: qv(pcols,mkx), ql(pcols,mkx), qi(pcols,mkx), t(pcols,mkx), s(pcols,mkx)
+    real(r8), intent(inout)  :: qvten(pcols,mkx), qlten(pcols,mkx), qiten(pcols,mkx), sten(pcols,mkx)
+    integer   i, k
+    real(r8)  dql, dqi, dqv, sum, aa, dum 
+    
+    do i = 1, ncol
+    do k = mkx, 1, -1    ! From the top to the 1st (lowest) layer from the surface
+       dql        = max(0._r8,1._r8*qlmin-ql(i,k))
+       dqi        = max(0._r8,1._r8*qimin-qi(i,k))
+       qlten(i,k) = qlten(i,k) +  dql/dt
+       qiten(i,k) = qiten(i,k) +  dqi/dt
+       qvten(i,k) = qvten(i,k) - (dql+dqi)/dt
+       sten(i,k)  = sten(i,k)  + xlv * (dql/dt) + xls * (dqi/dt)
+       ql(i,k)    = ql(i,k) +  dql
+       qi(i,k)    = qi(i,k) +  dqi
+       qv(i,k)    = qv(i,k) -  dql - dqi
+       s(i,k)     = s(i,k)  +  xlv * dql + xls * dqi
+       t(i,k)     = t(i,k)  + (xlv * dql + xls * dqi)/cp
+       dqv        = max(0._r8,1._r8*qvmin-qv(i,k))
+       qvten(i,k) = qvten(i,k) + dqv/dt
+       qv(i,k)    = qv(i,k)    + dqv
+       if( k .ne. 1 ) then 
+           qv(i,k-1)    = qv(i,k-1)    - dqv*dp(i,k)/dp(i,k-1)
+           qvten(i,k-1) = qvten(i,k-1) - dqv*dp(i,k)/dp(i,k-1)/dt
+       endif
+       qv(i,k) = max(qv(i,k),qvmin)
+       ql(i,k) = max(ql(i,k),qlmin)
+       qi(i,k) = max(qi(i,k),qimin)
+    end do
+    ! Jan.30.2021. Below block is additionally added for completeness.
+    ! Extra moisture used to satisfy 'qv(i,1)=qvmin' is proportionally
+    ! extracted from all the above layers ( k > 1 excluding k = 1 ) that has 'qv > qvmin'.
+    ! This fully preserves column moisture.
+    if( dqv .gt. 0._r8 ) then
+        sum = 0._r8
+        do k = 2, mkx
+           if( qv(i,k) .gt. qvmin ) sum = sum + (qv(i,k)-qvmin)*dp(i,k)
+        enddo
+        if( dqv*dp(i,1) .lt. sum ) then
+            aa = dqv*dp(i,1)/sum
+            do k = 2, mkx
+               if( qv(i,k) .gt. qvmin ) then
+                  dum        = aa*(qv(i,k)-qvmin)
+                  qv(i,k)    = qv(i,k) - dum
+                  qvten(i,k) = qvten(i,k) - dum/dt
+               endif
+            enddo
+        else
+            write(6,*) 'Full positive_moisture is impossible in UNICON'
+            do k = 2, mkx
+               if( qv(i,k) .gt. qvmin ) then
+                  dum        = (qv(i,k)-qvmin)
+                  qv(i,k)    = qv(i,k) - dum
+                  qvten(i,k) = qvten(i,k) - dum/dt
+               endif
+            enddo
+        endif
+    endif
+    end do
+    return
+
+  end subroutine positive_moisture
+
+
+  subroutine positive_tracer( pcols, ncol, mkx, dt, trmini, dp, tr, trten )
+  ! ------------------------------------------------------------------------------- !
+  ! If any 'tr < trmin' are developed in any layer, force them to be larger than    !
+  ! minimum value by transporting water vapor from the very lower layer.            !
+  ! Update final state variables and tendencies associated with this correction.    !
+  ! Note that 'tr' is the final state variables after applying corresponding        !
+  ! input tendencies.                                                               !
+  ! Be careful the order of k : '1': near-surface layer, 'mkx' : top layer          !
+  ! May.03.2011. Additional refinement is added in the lowest model layer for       !
+  !              complete treatment.                                                ! 
+  ! ------------------------------------------------------------------------------- !
+    implicit none
+    integer,  intent(in)     :: pcols, ncol, mkx
+    real(r8), intent(in)     :: dt, trmini
+    real(r8), intent(in)     :: dp(pcols,mkx)
+    real(r8), intent(inout)  :: tr(pcols,mkx)
+    real(r8), intent(inout)  :: trten(pcols,mkx)
+    integer   i, k
+    real(r8)  dtr, sum, aa, dum, trmin 
+
+    trmin = trmini * 1.01_r8
+    
+    do i = 1, ncol
+    do k = mkx, 1, -1    ! From the top to the 1st (lowest) layer from the surface
+       dtr = max(0._r8,1._r8*trmin-tr(i,k))
+       trten(i,k) = trten(i,k) + dtr/dt
+       tr(i,k)    = tr(i,k)    + dtr
+       if( k .ne. 1 ) then 
+           tr(i,k-1)    = tr(i,k-1)    - dtr*dp(i,k)/dp(i,k-1)
+           trten(i,k-1) = trten(i,k-1) - dtr*dp(i,k)/dp(i,k-1)/dt
+       endif
+       tr(i,k) = max(tr(i,k),trmin)
+    end do
+    ! Jan.30.2021. Below block is additionally added for completeness.
+    ! Extra tracer used to satisfy 'tr(i,1)=trmin' is proportionally
+    ! extracted from all the above layers ( k > 1 excluding k = 1 ) that has 'tr > trmin'.
+    ! This fully preserves column tracer.
+    if( dtr .gt. 0._r8 ) then
+        sum = 0._r8
+        do k = 2, mkx
+           if( tr(i,k) .gt. trmin ) sum = sum + (tr(i,k)-trmin)*dp(i,k)
+        enddo
+        if( dtr*dp(i,1) .lt. sum ) then
+            aa = dtr*dp(i,1)/sum
+            do k = 2, mkx
+               if( tr(i,k) .gt. trmin ) then
+                  dum        = aa*(tr(i,k)-trmin)
+                  tr(i,k)    = tr(i,k) - dum
+                  trten(i,k) = trten(i,k) - dum/dt
+               endif
+            enddo
+        else
+          ! write(6,*) 'Full positive_tracer is impossible in UNICON'
+            do k = 2, mkx
+               if( tr(i,k) .gt. trmin ) then
+                  dum        = (tr(i,k)-trmin)
+                  tr(i,k)    = tr(i,k) - dum
+                  trten(i,k) = trten(i,k) - dum/dt
+               endif
+            enddo
+        endif
+    endif
+    end do
+    return
+
+  end subroutine positive_tracer
+
+  ! SUNGSU.Feb.24.2021.
+  
+  subroutine positive_moisture_old( cp, xlv, xls, pcols, ncol, mkx, dt, qvmin, qlmin, qimin, dp, qv, ql, qi, t, s, qvten, &
                                 qlten, qiten, sten )
   ! ------------------------------------------------------------------------------- !
   ! Author : Sungsu Park. AMP/CGD/NCAR.                                             !
@@ -23403,10 +23791,10 @@ end subroutine compute_unicon
     end do
     return
 
-  end subroutine positive_moisture
+  end subroutine positive_moisture_old
 
 
-  subroutine positive_tracer( pcols, ncol, mkx, dt, trmin, dp, tr, trten )
+  subroutine positive_tracer_old( pcols, ncol, mkx, dt, trmin, dp, tr, trten )
   ! ------------------------------------------------------------------------------- !
   ! If any 'tr < trmin' are developed in any layer, force them to be larger than    !
   ! minimum value by transporting water vapor from the very lower layer.            !
@@ -23462,7 +23850,7 @@ end subroutine compute_unicon
     end do
     return
 
-  end subroutine positive_tracer
+  end subroutine positive_tracer_old
 
 
 
